@@ -3,6 +3,7 @@ import time
 import logging
 import requests
 import urllib3
+from datetime import datetime
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,6 +19,7 @@ GITHUB_RAW_URL = os.environ.get(
     "https://raw.githubusercontent.com/hydraponique/roscomvpn-happ-routing/refs/heads/main/HAPP/DEFAULT.DEEPLINK",
 )
 CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL", "300"))  # seconds
+CRON_SCHEDULE = os.environ.get("CRON_SCHEDULE", "").strip()
 SSL_VERIFY = REMNA_BASE_URL.startswith("https://")
 
 REMNA_HEADERS = {
@@ -97,19 +99,58 @@ def get_github_deeplink(url: str) -> str:
     return resp.text.strip()
 
 
+def run_cycle(settings_uuid: str, state: dict, squads: list) -> None:
+    """Одна итерация проверки: сравнить роутинг на GitHub с текущим и обновить при изменении."""
+    try:
+        github_deeplink = get_github_deeplink(GITHUB_RAW_URL)
+        log.info("Fetched GitHub deeplink (%d chars)", len(github_deeplink))
+
+        if github_deeplink != state["current_routing"]:
+            log.info("Routing changed! Updating subscription settings...")
+            result = patch_remna_settings({
+                "uuid": settings_uuid,
+                "happRouting": github_deeplink,
+            })
+            state["current_routing"] = github_deeplink
+            log.info("Successfully updated happRouting in subscription settings")
+            log.debug("Patch response: %s", result)
+        else:
+            log.info("No changes detected in subscription settings")
+
+    except Exception:
+        log.exception("Error during subscription settings check cycle")
+
+    for squad in squads:
+        try:
+            deeplink = get_github_deeplink(squad["url"])
+            if deeplink != squad["current_routing"]:
+                log.info("Routing changed for squad %s! Updating...", squad["uuid"])
+                patch_external_squad(squad["uuid"], deeplink, squad["current_settings"])
+                squad["current_settings"] = {**squad["current_settings"], "happRouting": deeplink}
+                squad["current_routing"] = deeplink
+                log.info("Successfully updated happRouting for squad %s", squad["uuid"])
+            else:
+                log.info("No changes detected for squad %s", squad["uuid"])
+        except Exception:
+            log.exception("Error updating squad %s", squad["uuid"])
+
+
 def main():
     log.info("Starting routing update monitor")
     log.info("Remna API: %s", REMNA_API_URL)
     log.info("GitHub URL: %s", GITHUB_RAW_URL)
-    log.info("Check interval: %ds", CHECK_INTERVAL)
+    if CRON_SCHEDULE:
+        log.info("Mode: cron schedule '%s' (container local time)", CRON_SCHEDULE)
+    else:
+        log.info("Mode: interval polling every %ds", CHECK_INTERVAL)
 
     # Fetch current settings on startup
     settings = get_remna_settings()
     data = settings.get("response", settings)
     settings_uuid = data["uuid"]
-    current_routing = (data.get("happRouting", "") or "").strip()
+    state = {"current_routing": (data.get("happRouting", "") or "").strip()}
     log.info("Settings UUID: %s", settings_uuid)
-    log.info("Current happRouting loaded (%d chars)", len(current_routing))
+    log.info("Current happRouting loaded (%d chars)", len(state["current_routing"]))
 
     squads = load_squad_configs()
     log.info("Loaded %d external squad(s)", len(squads))
@@ -123,41 +164,33 @@ def main():
         except Exception:
             log.exception("Failed to fetch initial routing for squad %s, will update on first cycle", squad["uuid"])
 
-    while True:
+    if CRON_SCHEDULE:
         try:
-            github_deeplink = get_github_deeplink(GITHUB_RAW_URL)
-            log.info("Fetched GitHub deeplink (%d chars)", len(github_deeplink))
+            from croniter import croniter
+        except ImportError:
+            raise SystemExit("CRON_SCHEDULE is set, but the 'croniter' package is not installed")
+        if not croniter.is_valid(CRON_SCHEDULE):
+            raise SystemExit(f"Invalid CRON_SCHEDULE expression: {CRON_SCHEDULE!r}")
 
-            if github_deeplink != current_routing:
-                log.info("Routing changed! Updating subscription settings...")
-                result = patch_remna_settings({
-                    "uuid": settings_uuid,
-                    "happRouting": github_deeplink,
-                })
-                current_routing = github_deeplink
-                log.info("Successfully updated happRouting in subscription settings")
-                log.debug("Patch response: %s", result)
-            else:
-                log.info("No changes detected in subscription settings")
-
-        except Exception:
-            log.exception("Error during subscription settings check cycle")
-
-        for squad in squads:
-            try:
-                deeplink = get_github_deeplink(squad["url"])
-                if deeplink != squad["current_routing"]:
-                    log.info("Routing changed for squad %s! Updating...", squad["uuid"])
-                    patch_external_squad(squad["uuid"], deeplink, squad["current_settings"])
-                    squad["current_settings"] = {**squad["current_settings"], "happRouting": deeplink}
-                    squad["current_routing"] = deeplink
-                    log.info("Successfully updated happRouting for squad %s", squad["uuid"])
-                else:
-                    log.info("No changes detected for squad %s", squad["uuid"])
-            except Exception:
-                log.exception("Error updating squad %s", squad["uuid"])
-
-        time.sleep(CHECK_INTERVAL)
+        # Синхронизируемся один раз при запуске, чтобы не ждать первого срабатывания
+        # расписания (например, после рестарта или деплоя), затем работаем по cron.
+        run_cycle(settings_uuid, state, squads)
+        schedule = croniter(CRON_SCHEDULE, datetime.now())
+        while True:
+            next_run = schedule.get_next(datetime)
+            delay = (next_run - datetime.now()).total_seconds()
+            if delay > 0:
+                log.info(
+                    "Next scheduled run at %s (in %ds)",
+                    next_run.isoformat(sep=" ", timespec="seconds"),
+                    int(delay),
+                )
+                time.sleep(delay)
+            run_cycle(settings_uuid, state, squads)
+    else:
+        while True:
+            run_cycle(settings_uuid, state, squads)
+            time.sleep(CHECK_INTERVAL)
 
 
 if __name__ == "__main__":
