@@ -1,3 +1,5 @@
+import base64
+import json
 import os
 import time
 import logging
@@ -32,6 +34,83 @@ if not SSL_VERIFY:
     REMNA_HEADERS["X-Forwarded-Proto"] = "https"
     REMNA_HEADERS["X-Forwarded-For"] = "127.0.0.1"
 
+DEEPLINK_PREFIX = "happ://routing/onadd/"
+
+# Поля happRouting со списками правил; суффикс env: ROUTING_EXTRA_<SUFFIX> / SQUAD_N_EXTRA_<SUFFIX>
+ROUTING_LIST_FIELDS = {
+    "DIRECT_SITES": "DirectSites",
+    "DIRECT_IP": "DirectIp",
+    "PROXY_SITES": "ProxySites",
+    "PROXY_IP": "ProxyIp",
+    "BLOCK_SITES": "BlockSites",
+    "BLOCK_IP": "BlockIp",
+}
+
+
+def parse_extra_list(value: str) -> list[str]:
+    if not value or not value.strip():
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def load_routing_extras(prefix: str = "ROUTING") -> dict[str, list[str]]:
+    extras = {}
+    for env_suffix, json_key in ROUTING_LIST_FIELDS.items():
+        items = parse_extra_list(os.environ.get(f"{prefix}_EXTRA_{env_suffix}", ""))
+        if items:
+            extras[json_key] = items
+    return extras
+
+
+def parse_deeplink(deeplink: str) -> tuple[str, dict]:
+    deeplink = deeplink.strip()
+    if not deeplink.startswith(DEEPLINK_PREFIX):
+        raise ValueError("Unsupported happRouting deeplink format")
+    payload = base64.b64decode(deeplink[len(DEEPLINK_PREFIX):])
+    return DEEPLINK_PREFIX, json.loads(payload)
+
+
+def build_deeplink(prefix: str, routing: dict) -> str:
+    encoded = base64.b64encode(
+        json.dumps(routing, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    return f"{prefix}{encoded}"
+
+
+def merge_routing_lists(base: list, extra: list) -> list:
+    seen = set(base)
+    merged = list(base)
+    for item in extra:
+        if item not in seen:
+            merged.append(item)
+            seen.add(item)
+    return merged
+
+
+def apply_routing_extras(deeplink: str, extras: dict[str, list[str]]) -> str:
+    if not extras:
+        return deeplink.strip()
+
+    prefix, routing = parse_deeplink(deeplink)
+    changed = False
+    for json_key, items in extras.items():
+        current = routing.get(json_key)
+        if current is None:
+            routing[json_key] = list(items)
+            changed = True
+            continue
+        if not isinstance(current, list):
+            log.warning("Routing field %s is not a list, skipping extras", json_key)
+            continue
+        merged = merge_routing_lists(current, items)
+        if merged != current:
+            routing[json_key] = merged
+            changed = True
+
+    if not changed:
+        return deeplink.strip()
+    return build_deeplink(prefix, routing)
+
 
 def load_squad_configs() -> list:
     squads = []
@@ -41,7 +120,13 @@ def load_squad_configs() -> list:
         url = os.environ.get(f"SQUAD_{i}_URL", "").strip()
         if not uuid or not url:
             break
-        squads.append({"uuid": uuid, "url": url, "current_routing": None, "current_settings": {}})
+        squads.append({
+            "uuid": uuid,
+            "url": url,
+            "current_routing": None,
+            "current_settings": {},
+            "routing_extras": load_routing_extras(f"SQUAD_{i}"),
+        })
         i += 1
     return squads
 
@@ -104,14 +189,17 @@ def run_cycle(settings_uuid: str, state: dict, squads: list) -> None:
     try:
         github_deeplink = get_github_deeplink(GITHUB_RAW_URL)
         log.info("Fetched GitHub deeplink (%d chars)", len(github_deeplink))
+        target_deeplink = apply_routing_extras(github_deeplink, state["routing_extras"])
+        if target_deeplink != github_deeplink:
+            log.info("Applied routing extras to subscription settings deeplink")
 
-        if github_deeplink != state["current_routing"]:
+        if target_deeplink != state["current_routing"]:
             log.info("Routing changed! Updating subscription settings...")
             result = patch_remna_settings({
                 "uuid": settings_uuid,
-                "happRouting": github_deeplink,
+                "happRouting": target_deeplink,
             })
-            state["current_routing"] = github_deeplink
+            state["current_routing"] = target_deeplink
             log.info("Successfully updated happRouting in subscription settings")
             log.debug("Patch response: %s", result)
         else:
@@ -123,11 +211,14 @@ def run_cycle(settings_uuid: str, state: dict, squads: list) -> None:
     for squad in squads:
         try:
             deeplink = get_github_deeplink(squad["url"])
-            if deeplink != squad["current_routing"]:
+            target_deeplink = apply_routing_extras(deeplink, squad["routing_extras"])
+            if target_deeplink != deeplink:
+                log.info("Applied routing extras for squad %s", squad["uuid"])
+            if target_deeplink != squad["current_routing"]:
                 log.info("Routing changed for squad %s! Updating...", squad["uuid"])
-                patch_external_squad(squad["uuid"], deeplink, squad["current_settings"])
-                squad["current_settings"] = {**squad["current_settings"], "happRouting": deeplink}
-                squad["current_routing"] = deeplink
+                patch_external_squad(squad["uuid"], target_deeplink, squad["current_settings"])
+                squad["current_settings"] = {**squad["current_settings"], "happRouting": target_deeplink}
+                squad["current_routing"] = target_deeplink
                 log.info("Successfully updated happRouting for squad %s", squad["uuid"])
             else:
                 log.info("No changes detected for squad %s", squad["uuid"])
@@ -148,9 +239,15 @@ def main():
     settings = get_remna_settings()
     data = settings.get("response", settings)
     settings_uuid = data["uuid"]
-    state = {"current_routing": (data.get("happRouting", "") or "").strip()}
+    routing_extras = load_routing_extras()
+    state = {
+        "current_routing": (data.get("happRouting", "") or "").strip(),
+        "routing_extras": routing_extras,
+    }
     log.info("Settings UUID: %s", settings_uuid)
     log.info("Current happRouting loaded (%d chars)", len(state["current_routing"]))
+    if routing_extras:
+        log.info("Routing extras configured: %s", ", ".join(sorted(routing_extras)))
 
     squads = load_squad_configs()
     log.info("Loaded %d external squad(s)", len(squads))
@@ -161,6 +258,12 @@ def main():
             squad["current_settings"] = squad_data.get("subscriptionSettings", {}) or {}
             squad["current_routing"] = (squad["current_settings"].get("happRouting", "") or "").strip()
             log.info("Squad %s current happRouting loaded (%d chars)", squad["uuid"], len(squad["current_routing"]))
+            if squad["routing_extras"]:
+                log.info(
+                    "Squad %s routing extras configured: %s",
+                    squad["uuid"],
+                    ", ".join(sorted(squad["routing_extras"])),
+                )
         except Exception:
             log.exception("Failed to fetch initial routing for squad %s, will update on first cycle", squad["uuid"])
 

@@ -106,6 +106,13 @@ docker compose up -d
 | `CRON_SCHEDULE` | нет | — | Запуск проверки по расписанию (cron-выражение, напр. `0 9 * * *`). Если задано — заменяет `CHECK_INTERVAL`. Время в часовом поясе контейнера (по умолчанию UTC) |
 | `SQUAD_N_UUID` | нет | — | UUID внешнего сквада (N = 1, 2, 3, ...) |
 | `SQUAD_N_URL` | нет | — | GitHub URL файла с роутингом для этого сквада |
+| `ROUTING_EXTRA_DIRECT_SITES` | нет | — | Дополнительные правила direct (сайты), через запятую. Пример: `geosite:my-domain,geosite:another` |
+| `ROUTING_EXTRA_DIRECT_IP` | нет | — | Дополнительные правила direct (IP), через запятую. Пример: `geoip:my-range` |
+| `ROUTING_EXTRA_PROXY_SITES` | нет | — | Дополнительные правила proxy (сайты) |
+| `ROUTING_EXTRA_PROXY_IP` | нет | — | Дополнительные правила proxy (IP) |
+| `ROUTING_EXTRA_BLOCK_SITES` | нет | — | Дополнительные правила block (сайты) |
+| `ROUTING_EXTRA_BLOCK_IP` | нет | — | Дополнительные правила block (IP) |
+| `SQUAD_N_EXTRA_*` | нет | — | То же, что `ROUTING_EXTRA_*`, но для конкретного сквада (например `SQUAD_1_EXTRA_DIRECT_SITES`) |
 
 ### Режим запуска: интервал или расписание
 
@@ -136,6 +143,19 @@ SQUAD_2_URL=https://raw.githubusercontent.com/.../SQUAD2.DEEPLINK
 ```
 
 Количество сквадов не ограничено. Если переменные не заданы — синхронизируются только настройки подписки.
+
+### Дополнительные правила роутинга
+
+Помимо синхронизации с GitHub, можно добавить свои правила в поля `DirectSites`, `DirectIp`, `ProxySites`, `ProxyIp`, `BlockSites` и `BlockIp`. Значения из переменных окружения **дописываются** к спискам из GitHub (дубликаты игнорируются).
+
+```env
+# direct: сайты и IP
+ROUTING_EXTRA_DIRECT_SITES=geosite:my-bank,geosite:local-service
+ROUTING_EXTRA_DIRECT_IP=geoip:direct
+
+# для конкретного сквада
+SQUAD_1_EXTRA_DIRECT_SITES=geosite:corp-internal
+```
 
 ## Логи
 
