@@ -1,6 +1,7 @@
 services:
   routing-updater:
-    image: ghcr.io/lifeindarkside/remnawave-routing-update:latest
+    build: .
+    image: remna-routing-updater:local
     container_name: remna-routing-updater
     restart: unless-stopped
     env_file:

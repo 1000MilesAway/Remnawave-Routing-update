@@ -64,10 +64,36 @@ def load_routing_extras(prefix: str = "ROUTING") -> dict[str, list[str]]:
 
 def parse_deeplink(deeplink: str) -> tuple[str, dict]:
     deeplink = deeplink.strip()
-    if not deeplink.startswith(DEEPLINK_PREFIX):
-        raise ValueError("Unsupported happRouting deeplink format")
-    payload = base64.b64decode(deeplink[len(DEEPLINK_PREFIX):])
-    return DEEPLINK_PREFIX, json.loads(payload)
+    if not deeplink:
+        raise ValueError("Empty happRouting deeplink")
+
+    prefix = DEEPLINK_PREFIX
+    payload_b64 = deeplink
+    for known_prefix in (
+        "happ://routing/onadd/",
+        "happ://routing/add/",
+        "happ://routing/import/",
+    ):
+        if deeplink.startswith(known_prefix):
+            prefix = known_prefix
+            payload_b64 = deeplink[len(known_prefix):]
+            break
+
+    if payload_b64 == deeplink and not deeplink.startswith("happ://"):
+        payload_b64 = deeplink
+
+    padding = "=" * (-len(payload_b64) % 4)
+    payload = base64.b64decode(payload_b64 + padding)
+    return prefix, json.loads(payload)
+
+
+def routing_configs_equal(left: str, right: str) -> bool:
+    if left.strip() == right.strip():
+        return True
+    try:
+        return parse_deeplink(left)[1] == parse_deeplink(right)[1]
+    except (ValueError, json.JSONDecodeError):
+        return False
 
 
 def build_deeplink(prefix: str, routing: dict) -> str:
@@ -103,9 +129,11 @@ def apply_routing_extras(deeplink: str, extras: dict[str, list[str]]) -> str:
             log.warning("Routing field %s is not a list, skipping extras", json_key)
             continue
         merged = merge_routing_lists(current, items)
+        added = [item for item in items if item not in current]
         if merged != current:
             routing[json_key] = merged
             changed = True
+            log.info("Routing extras added to %s: %s", json_key, ", ".join(added))
 
     if not changed:
         return deeplink.strip()
@@ -193,7 +221,7 @@ def run_cycle(settings_uuid: str, state: dict, squads: list) -> None:
         if target_deeplink != github_deeplink:
             log.info("Applied routing extras to subscription settings deeplink")
 
-        if target_deeplink != state["current_routing"]:
+        if not routing_configs_equal(target_deeplink, state["current_routing"]):
             log.info("Routing changed! Updating subscription settings...")
             result = patch_remna_settings({
                 "uuid": settings_uuid,
@@ -214,7 +242,7 @@ def run_cycle(settings_uuid: str, state: dict, squads: list) -> None:
             target_deeplink = apply_routing_extras(deeplink, squad["routing_extras"])
             if target_deeplink != deeplink:
                 log.info("Applied routing extras for squad %s", squad["uuid"])
-            if target_deeplink != squad["current_routing"]:
+            if not routing_configs_equal(target_deeplink, squad["current_routing"] or ""):
                 log.info("Routing changed for squad %s! Updating...", squad["uuid"])
                 patch_external_squad(squad["uuid"], target_deeplink, squad["current_settings"])
                 squad["current_settings"] = {**squad["current_settings"], "happRouting": target_deeplink}
@@ -247,7 +275,10 @@ def main():
     log.info("Settings UUID: %s", settings_uuid)
     log.info("Current happRouting loaded (%d chars)", len(state["current_routing"]))
     if routing_extras:
-        log.info("Routing extras configured: %s", ", ".join(sorted(routing_extras)))
+        for field, items in sorted(routing_extras.items()):
+            log.info("Routing extras for %s: %s", field, ", ".join(items))
+    else:
+        log.info("No routing extras configured (ROUTING_EXTRA_*)")
 
     squads = load_squad_configs()
     log.info("Loaded %d external squad(s)", len(squads))
