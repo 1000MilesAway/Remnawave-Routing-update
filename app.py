@@ -62,6 +62,15 @@ def load_routing_extras(prefix: str = "ROUTING") -> dict[str, list[str]]:
     return extras
 
 
+def load_routing_overrides(prefix: str = "ROUTING") -> dict[str, str]:
+    """Скалярные поля happRouting, заменяемые целиком; суффикс env: <PREFIX>_NAME и т.п."""
+    overrides = {}
+    name = os.environ.get(f"{prefix}_NAME", "").strip()
+    if name:
+        overrides["Name"] = name
+    return overrides
+
+
 def parse_deeplink(deeplink: str) -> tuple[str, dict]:
     deeplink = deeplink.strip()
     if not deeplink:
@@ -113,12 +122,22 @@ def merge_routing_lists(base: list, extra: list) -> list:
     return merged
 
 
-def apply_routing_extras(deeplink: str, extras: dict[str, list[str]]) -> str:
-    if not extras:
+def apply_routing_extras(
+    deeplink: str,
+    extras: dict[str, list[str]],
+    overrides: dict[str, str] | None = None,
+) -> str:
+    overrides = overrides or {}
+    if not extras and not overrides:
         return deeplink.strip()
 
     prefix, routing = parse_deeplink(deeplink)
     changed = False
+    for json_key, value in overrides.items():
+        if routing.get(json_key) != value:
+            routing[json_key] = value
+            changed = True
+            log.info("Routing field %s overridden: %s", json_key, value)
     for json_key, items in extras.items():
         current = routing.get(json_key)
         if current is None:
@@ -154,6 +173,7 @@ def load_squad_configs() -> list:
             "current_routing": None,
             "current_settings": {},
             "routing_extras": load_routing_extras(f"SQUAD_{i}"),
+            "routing_overrides": load_routing_overrides(f"SQUAD_{i}"),
         })
         i += 1
     return squads
@@ -217,7 +237,9 @@ def run_cycle(settings_uuid: str, state: dict, squads: list) -> None:
     try:
         github_deeplink = get_github_deeplink(GITHUB_RAW_URL)
         log.info("Fetched GitHub deeplink (%d chars)", len(github_deeplink))
-        target_deeplink = apply_routing_extras(github_deeplink, state["routing_extras"])
+        target_deeplink = apply_routing_extras(
+            github_deeplink, state["routing_extras"], state["routing_overrides"]
+        )
         if target_deeplink != github_deeplink:
             log.info("Applied routing extras to subscription settings deeplink")
 
@@ -239,7 +261,9 @@ def run_cycle(settings_uuid: str, state: dict, squads: list) -> None:
     for squad in squads:
         try:
             deeplink = get_github_deeplink(squad["url"])
-            target_deeplink = apply_routing_extras(deeplink, squad["routing_extras"])
+            target_deeplink = apply_routing_extras(
+                deeplink, squad["routing_extras"], squad["routing_overrides"]
+            )
             if target_deeplink != deeplink:
                 log.info("Applied routing extras for squad %s", squad["uuid"])
             if not routing_configs_equal(target_deeplink, squad["current_routing"] or ""):
@@ -268,9 +292,11 @@ def main():
     data = settings.get("response", settings)
     settings_uuid = data["uuid"]
     routing_extras = load_routing_extras()
+    routing_overrides = load_routing_overrides()
     state = {
         "current_routing": (data.get("happRouting", "") or "").strip(),
         "routing_extras": routing_extras,
+        "routing_overrides": routing_overrides,
     }
     log.info("Settings UUID: %s", settings_uuid)
     log.info("Current happRouting loaded (%d chars)", len(state["current_routing"]))
@@ -279,6 +305,8 @@ def main():
             log.info("Routing extras for %s: %s", field, ", ".join(items))
     else:
         log.info("No routing extras configured (ROUTING_EXTRA_*)")
+    for field, value in sorted(routing_overrides.items()):
+        log.info("Routing override for %s: %s", field, value)
 
     squads = load_squad_configs()
     log.info("Loaded %d external squad(s)", len(squads))

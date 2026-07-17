@@ -113,6 +113,8 @@ docker compose up -d
 | `ROUTING_EXTRA_BLOCK_SITES` | нет | — | Дополнительные правила block (сайты) |
 | `ROUTING_EXTRA_BLOCK_IP` | нет | — | Дополнительные правила block (IP) |
 | `SQUAD_N_EXTRA_*` | нет | — | То же, что `ROUTING_EXTRA_*`, но для конкретного сквада (например `SQUAD_1_EXTRA_DIRECT_SITES`) |
+| `ROUTING_NAME` | нет | — | Название роутинга (поле `Name`, показывается в Happ). Заменяет значение из GitHub-конфига |
+| `SQUAD_N_NAME` | нет | — | То же, что `ROUTING_NAME`, но для конкретного сквада |
 
 ### Режим запуска: интервал или расписание
 
@@ -155,6 +157,15 @@ ROUTING_EXTRA_DIRECT_IP=geoip:direct
 
 # для конкретного сквада
 SQUAD_1_EXTRA_DIRECT_SITES=geosite:corp-internal
+```
+
+### Название роутинга
+
+Поле `Name` из GitHub-конфига (например `RoscomVPN`) можно заменить на своё — оно показывается пользователю в приложении Happ:
+
+```env
+ROUTING_NAME=Березка VPN
+SQUAD_1_NAME=Березка VPN
 ```
 
 ## Логи
