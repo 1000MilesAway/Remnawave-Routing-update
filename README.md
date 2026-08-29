@@ -112,7 +112,19 @@ docker compose up -d
 | `ROUTING_EXTRA_PROXY_IP` | нет | — | Дополнительные правила proxy (IP) |
 | `ROUTING_EXTRA_BLOCK_SITES` | нет | — | Дополнительные правила block (сайты) |
 | `ROUTING_EXTRA_BLOCK_IP` | нет | — | Дополнительные правила block (IP) |
+| `ROUTING_REMOVE_DIRECT_SITES` | нет | — | Правила, вырезаемые из direct (сайты), через запятую. Пример: `geosite:whitelist` |
+| `ROUTING_REMOVE_DIRECT_IP` | нет | — | Правила, вырезаемые из direct (IP) |
+| `ROUTING_REMOVE_PROXY_SITES` | нет | — | Правила, вырезаемые из proxy (сайты) |
+| `ROUTING_REMOVE_PROXY_IP` | нет | — | Правила, вырезаемые из proxy (IP) |
+| `ROUTING_REMOVE_BLOCK_SITES` | нет | — | Правила, вырезаемые из block (сайты) |
+| `ROUTING_REMOVE_BLOCK_IP` | нет | — | Правила, вырезаемые из block (IP) |
 | `SQUAD_N_EXTRA_*` | нет | — | То же, что `ROUTING_EXTRA_*`, но для конкретного сквада (например `SQUAD_1_EXTRA_DIRECT_SITES`) |
+| `SQUAD_N_REMOVE_*` | нет | — | То же, что `ROUTING_REMOVE_*`, но для конкретного сквада |
+
+Удаление применяется **до** добавления extras. Оно нужно, когда апстримный роутинг ссылается на коды из
+кастомных geosite/geoip (например `geosite:twitch-ads`, `geosite:whitelist`, `geosite:torrent`, `geoip:direct`):
+клиенты со стандартными базами такие коды не резолвят и падают с ошибкой
+`failed to check code TWITCH-ADS from geosite.dat > failed to build routing configuration`.
 | `ROUTING_NAME` | нет | — | Название роутинга (поле `Name`, показывается в Happ). Заменяет значение из GitHub-конфига |
 | `SQUAD_N_NAME` | нет | — | То же, что `ROUTING_NAME`, но для конкретного сквада |
 

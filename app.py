@@ -62,6 +62,16 @@ def load_routing_extras(prefix: str = "ROUTING") -> dict[str, list[str]]:
     return extras
 
 
+def load_routing_removes(prefix: str = "ROUTING") -> dict[str, list[str]]:
+    """Правила, вырезаемые из happRouting; суффикс env: <PREFIX>_REMOVE_<SUFFIX>."""
+    removes = {}
+    for env_suffix, json_key in ROUTING_LIST_FIELDS.items():
+        items = parse_extra_list(os.environ.get(f"{prefix}_REMOVE_{env_suffix}", ""))
+        if items:
+            removes[json_key] = items
+    return removes
+
+
 def load_routing_overrides(prefix: str = "ROUTING") -> dict[str, str]:
     """Скалярные поля happRouting, заменяемые целиком; суффикс env: <PREFIX>_NAME и т.п."""
     overrides = {}
@@ -126,13 +136,25 @@ def apply_routing_extras(
     deeplink: str,
     extras: dict[str, list[str]],
     overrides: dict[str, str] | None = None,
+    removes: dict[str, list[str]] | None = None,
 ) -> str:
     overrides = overrides or {}
-    if not extras and not overrides:
+    removes = removes or {}
+    if not extras and not overrides and not removes:
         return deeplink.strip()
 
     prefix, routing = parse_deeplink(deeplink)
     changed = False
+    for json_key, items in removes.items():
+        current = routing.get(json_key)
+        if not isinstance(current, list):
+            continue
+        kept = [item for item in current if item not in items]
+        dropped = [item for item in current if item in items]
+        if dropped:
+            routing[json_key] = kept
+            changed = True
+            log.info("Routing rules removed from %s: %s", json_key, ", ".join(dropped))
     for json_key, value in overrides.items():
         if routing.get(json_key) != value:
             routing[json_key] = value
@@ -174,6 +196,7 @@ def load_squad_configs() -> list:
             "current_settings": {},
             "routing_extras": load_routing_extras(f"SQUAD_{i}"),
             "routing_overrides": load_routing_overrides(f"SQUAD_{i}"),
+            "routing_removes": load_routing_removes(f"SQUAD_{i}"),
         })
         i += 1
     return squads
@@ -238,7 +261,10 @@ def run_cycle(settings_uuid: str, state: dict, squads: list) -> None:
         github_deeplink = get_github_deeplink(GITHUB_RAW_URL)
         log.info("Fetched GitHub deeplink (%d chars)", len(github_deeplink))
         target_deeplink = apply_routing_extras(
-            github_deeplink, state["routing_extras"], state["routing_overrides"]
+            github_deeplink,
+            state["routing_extras"],
+            state["routing_overrides"],
+            state["routing_removes"],
         )
         if target_deeplink != github_deeplink:
             log.info("Applied routing extras to subscription settings deeplink")
@@ -262,7 +288,10 @@ def run_cycle(settings_uuid: str, state: dict, squads: list) -> None:
         try:
             deeplink = get_github_deeplink(squad["url"])
             target_deeplink = apply_routing_extras(
-                deeplink, squad["routing_extras"], squad["routing_overrides"]
+                deeplink,
+                squad["routing_extras"],
+                squad["routing_overrides"],
+                squad["routing_removes"],
             )
             if target_deeplink != deeplink:
                 log.info("Applied routing extras for squad %s", squad["uuid"])
@@ -293,10 +322,12 @@ def main():
     settings_uuid = data["uuid"]
     routing_extras = load_routing_extras()
     routing_overrides = load_routing_overrides()
+    routing_removes = load_routing_removes()
     state = {
         "current_routing": (data.get("happRouting", "") or "").strip(),
         "routing_extras": routing_extras,
         "routing_overrides": routing_overrides,
+        "routing_removes": routing_removes,
     }
     log.info("Settings UUID: %s", settings_uuid)
     log.info("Current happRouting loaded (%d chars)", len(state["current_routing"]))
@@ -305,6 +336,9 @@ def main():
             log.info("Routing extras for %s: %s", field, ", ".join(items))
     else:
         log.info("No routing extras configured (ROUTING_EXTRA_*)")
+    if routing_removes:
+        for field, items in sorted(routing_removes.items()):
+            log.info("Routing removes for %s: %s", field, ", ".join(items))
     for field, value in sorted(routing_overrides.items()):
         log.info("Routing override for %s: %s", field, value)
 
