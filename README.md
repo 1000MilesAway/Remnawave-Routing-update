@@ -189,3 +189,33 @@ docker compose logs -f
 ## Лицензия
 
 MIT
+
+## Форк: отличия от оригинала и почему он не мерджится
+
+Оригинал — [lifeindarkside/Remnawave-Routing-update](https://github.com/lifeindarkside/Remnawave-Routing-update).
+
+**Не мерджить upstream/main, пока панель не обновлена до 3.x.** Коммит `aa501c7`
+(«remnawave panel 3.0.0 support») переносит роутинг из поля `happRouting` в заголовки
+ответа (`responseHeadersAdd`). Наша панель — `remnawave/backend:2`, версия 2.8.1, где
+роутинг живёт именно в `happRouting`. После мерджа апдейтер перестанет обновлять роутинг,
+а `patch_external_squad` начнёт слать payload, которого API 2.8.1 не понимает.
+
+Остальные коммиты оригинала (на 2026-08-31) — правки README, полезного для нас нет.
+
+Проверить расхождение:
+
+```bash
+git remote add upstream https://github.com/lifeindarkside/Remnawave-Routing-update.git
+git fetch upstream && git log --oneline HEAD..upstream/main
+```
+
+### Что добавлено в форке
+
+- `ROUTING_NAME` / `SQUAD_N_NAME` — подмена поля `Name` в деплинке.
+- `ROUTING_EXTRA_*` — добавление своих правил в списки (`DirectSites`, `DirectIp` и др.).
+- `ROUTING_REMOVE_*` — вырезание правил апстрима. Нужно потому, что апстрим использует коды
+  из кастомных баз roscomvpn (`geosite:twitch-ads`, `geosite:whitelist`, `geosite:torrent`,
+  `geoip:direct`), которых нет в стандартных базах — клиенты на них не стартуют.
+
+Деплой на проде — локальной сборкой (`build: .` в docker-compose.yml), образы из реестра
+не используются.
